@@ -1,5 +1,12 @@
 import { assert } from 'chai'
-import { After, Given, Then, When } from '@cucumber/cucumber'
+import {
+  After,
+  AfterAll,
+  Given,
+  setDefaultTimeout,
+  Then,
+  When,
+} from '@cucumber/cucumber'
 import { createClient } from 'redis'
 import {
   DatastoreValueType,
@@ -8,12 +15,23 @@ import {
   ModelType,
   PrimaryKeyUuidProperty,
   queryBuilder,
-  SortOrder,
   TextProperty,
   createOrm,
 } from 'functional-models'
 import * as redisDatastoreAdapter from '../../src/datastoreAdapter.js'
 import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers'
+
+const cucumberStepTimeoutMs = 120_000
+const containerStartupTimeoutMs = 120_000
+
+setDefaultTimeout(cucumberStepTimeoutMs)
+
+type RedisClientType = ReturnType<typeof createClient>
+
+const pendingCleanup = {
+  containers: [] as StartedTestContainer[],
+  clients: [] as RedisClientType[],
+}
 
 const REDIS_IMAGES = {
   RedisDatastore: 'redis:7-alpine',
@@ -83,21 +101,75 @@ const _singleModelData = (dataKey: string) => {
   return data
 }
 
+const _trackContainer = (container: StartedTestContainer) => {
+  pendingCleanup.containers.push(container)
+  return container
+}
+
+const _trackClient = (client: RedisClientType) => {
+  pendingCleanup.clients.push(client)
+  return client
+}
+
+const _untrackContainer = (container: StartedTestContainer) => {
+  pendingCleanup.containers = pendingCleanup.containers.filter(
+    tracked => tracked !== container
+  )
+}
+
+const _untrackClient = (client: RedisClientType) => {
+  pendingCleanup.clients = pendingCleanup.clients.filter(
+    tracked => tracked !== client
+  )
+}
+
+const _stopClients = async (clients: readonly RedisClientType[]) => {
+  await Promise.all(
+    clients.map(async client => {
+      if (client.isOpen) {
+        await client.quit()
+      }
+    })
+  )
+}
+
+const _stopContainers = async (containers: readonly StartedTestContainer[]) => {
+  await Promise.all(
+    containers.map(async container => {
+      await container.stop()
+    })
+  )
+}
+
+const _cleanupResources = async (
+  containers: readonly StartedTestContainer[],
+  clients: readonly RedisClientType[]
+) => {
+  await _stopClients(clients)
+  clients.forEach(client => _untrackClient(client))
+  await _stopContainers(containers)
+  containers.forEach(container => _untrackContainer(container))
+}
+
 const _startRedisContainer = async (store: keyof typeof REDIS_IMAGES) => {
   const image = REDIS_IMAGES[store]
-  return new GenericContainer(image)
+  const container = await new GenericContainer(image)
     .withExposedPorts(6379)
+    .withStartupTimeout(containerStartupTimeoutMs)
     .withWaitStrategy(Wait.forLogMessage('Ready to accept connections'))
     .start()
+  return _trackContainer(container)
 }
 
 const _createDatastore = async (store: keyof typeof REDIS_IMAGES) => {
   const container = await _startRedisContainer(store)
   const host = container.getHost()
   const port = container.getMappedPort(6379)
-  const redisClient = createClient({
-    url: `redis://${host}:${port}`,
-  })
+  const redisClient = _trackClient(
+    createClient({
+      url: `redis://${host}:${port}`,
+    })
+  )
   await redisClient.connect()
   await redisClient.flushDb()
   return {
@@ -228,17 +300,10 @@ Then('the count is {int}', function (count: number) {
 
 After(async function () {
   const containers = (this.redisContainers || []) as StartedTestContainer[]
-  const clients = (this.redisClients || []) as any[]
-  await Promise.all(
-    clients.map(async client => {
-      if (client.isOpen) {
-        await client.quit()
-      }
-    })
-  )
-  await Promise.all(
-    containers.map(async container => {
-      await container.stop()
-    })
-  )
+  const clients = (this.redisClients || []) as RedisClientType[]
+  await _cleanupResources(containers, clients)
+})
+
+AfterAll(async () => {
+  await _cleanupResources(pendingCleanup.containers, pendingCleanup.clients)
 })

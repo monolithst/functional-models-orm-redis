@@ -17,7 +17,7 @@
     "prettier": "prettier --write .",
     "prettier:check": "prettier -c .",
     "test": "mocha -r tsx --extensions ts,tsx 'test/**/*.{ts,tsx}'",
-    "test:features": "NODE_OPTIONS='--import tsx' ./node_modules/.bin/cucumber-js",
+    "test:features": "NODE_OPTIONS='--import tsx' ./node_modules/.bin/cucumber-js --force-exit",
     "test:coverage": "c8 --all --reporter cobertura --reporter text --reporter lcov --reporter html npm run test"
   },
   "config": {

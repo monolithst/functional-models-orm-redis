@@ -30,3 +30,4 @@ jobs:
 
       - name: Run Cucumber Tests
         run: npm run test:features
+        timeout-minutes: 15
