@@ -19,6 +19,9 @@ import {
 import { datastoreAdapter as memoryDatastore } from 'functional-models-orm-memory'
 import kebabCase from 'lodash/kebabCase.js'
 import merge from 'lodash/merge.js'
+import { RedisTtlOptions } from './types.js'
+
+const defaultTtlPropertyKey = 'ttl'
 
 export const getKeyPrefixForModel = <T extends DataDescription>(
   model: ModelType<T>
@@ -131,6 +134,64 @@ const _getPropertyType = <T extends DataDescription>(
     return undefined
   }
   return property.getPropertyType()
+}
+
+const _ttlSecondsFromIntegerValue = (value: unknown): number | undefined => {
+  if (
+    typeof value !== 'number' ||
+    Number.isInteger(value) === false ||
+    value <= 0
+  ) {
+    return undefined
+  }
+  return value
+}
+
+const _ttlSecondsFromDatetimeValue = (value: unknown): number | undefined => {
+  if (value === null || value === undefined) {
+    return undefined
+  }
+  const timestamp =
+    value instanceof Date ? value.getTime() : _toTimestamp(value)
+  if (Number.isNaN(timestamp)) {
+    return undefined
+  }
+  const ttlSeconds = Math.ceil((timestamp - Date.now()) / 1000)
+  if (ttlSeconds <= 0) {
+    return undefined
+  }
+  return ttlSeconds
+}
+
+export const resolveTtlSeconds = <T extends DataDescription>(
+  args: Readonly<{
+    model: ModelType<T>
+    data: Record<string, unknown>
+    options?: RedisTtlOptions
+  }>
+): number | undefined => {
+  const ttlPropertyKey = args.options?.ttlSelector
+    ? args.options.ttlSelector(args.model)
+    : args.options?.noDefaultTTL === true
+      ? undefined
+      : defaultTtlPropertyKey
+
+  if (!ttlPropertyKey) {
+    return undefined
+  }
+
+  const propertyType = _getPropertyType(args.model, ttlPropertyKey)
+  const value = args.data[ttlPropertyKey]
+
+  if (propertyType === PropertyType.Integer) {
+    return _ttlSecondsFromIntegerValue(value)
+  }
+
+  if (propertyType === PropertyType.Datetime) {
+    return _ttlSecondsFromDatetimeValue(value)
+  }
+
+  return undefined
 }
 
 const _toSortField = <T extends DataDescription>(

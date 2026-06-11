@@ -23,6 +23,7 @@ import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers'
 
 const cucumberStepTimeoutMs = 120_000
 const containerStartupTimeoutMs = 120_000
+const ttlWaitStepTimeoutMs = 30_000
 
 setDefaultTimeout(cucumberStepTimeoutMs)
 
@@ -47,6 +48,17 @@ const MODELS = {
         id: PrimaryKeyUuidProperty(),
         name: TextProperty({ required: true }),
         score: IntegerProperty({ required: true }),
+      },
+    },
+  ],
+  TtlModel: [
+    {
+      pluralName: 'TtlModel',
+      namespace: 'functional-models-orm-redis',
+      properties: {
+        id: PrimaryKeyUuidProperty(),
+        name: TextProperty({ required: true }),
+        ttl: IntegerProperty({ required: true }),
       },
     },
   ],
@@ -79,6 +91,11 @@ const MODEL_DATA = {
     id: '00000000-0000-4000-8000-000000000002',
     name: 'beta',
     score: 10,
+  }),
+  TtlModelData: () => ({
+    id: '00000000-0000-4000-8000-000000000003',
+    name: 'expires-soon',
+    ttl: 3,
   }),
 }
 
@@ -149,6 +166,12 @@ const _cleanupResources = async (
   clients.forEach(client => _untrackClient(client))
   await _stopContainers(containers)
   containers.forEach(container => _untrackContainer(container))
+}
+
+const _sleep = (milliseconds: number) => {
+  return new Promise(resolve => {
+    setTimeout(resolve, milliseconds)
+  })
 }
 
 const _startRedisContainer = async (store: keyof typeof REDIS_IMAGES) => {
@@ -232,6 +255,14 @@ When(
 When('save is called on the instances', async function () {
   await Promise.all(this.instances.map((x: any) => x.save()))
 })
+
+When(
+  '{int} seconds elapse',
+  { timeout: ttlWaitStepTimeoutMs },
+  async function (seconds: number) {
+    await _sleep(seconds * 1000)
+  }
+)
 
 When(
   "the datastore's search is called with {word}",

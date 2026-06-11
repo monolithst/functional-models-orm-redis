@@ -1,5 +1,11 @@
 import { assert } from 'chai'
-import { Model, TextProperty, queryBuilder } from 'functional-models'
+import {
+  DatetimeProperty,
+  IntegerProperty,
+  Model,
+  TextProperty,
+  queryBuilder,
+} from 'functional-models'
 import { describe, it } from 'mocha'
 import sinon from 'sinon'
 import { create as createDatastoreAdapter } from '../../src/datastoreAdapter.js'
@@ -20,6 +26,31 @@ const TestModel = Model<TestModelData>({
 })
 const TestOrmModel = TestModel as any
 
+const TtlTestModel = Model<Readonly<{ id: string; name: string; ttl: number }>>(
+  {
+    pluralName: 'TtlModel',
+    namespace: '@functional-models-orm-redis',
+    properties: {
+      id: TextProperty(),
+      name: TextProperty(),
+      ttl: IntegerProperty(),
+    },
+  }
+)
+const TtlTestOrmModel = TtlTestModel as any
+
+const DatetimeTtlTestModel = Model<
+  Readonly<{ id: string; name: string; ttl: string }>
+>({
+  pluralName: 'DatetimeTtlModel',
+  namespace: '@functional-models-orm-redis',
+  properties: {
+    id: TextProperty(),
+    name: TextProperty(),
+    ttl: DatetimeProperty(),
+  },
+})
+
 const createRedisClientMock = () => {
   return {
     sendCommand: sinon.stub().resolves([]),
@@ -30,6 +61,7 @@ const createRedisClientMock = () => {
     hSet: sinon.stub().resolves(1),
     del: sinon.stub().resolves(1),
     mSet: sinon.stub().resolves('OK'),
+    expire: sinon.stub().resolves(1),
   }
 }
 
@@ -95,6 +127,92 @@ describe('/src/datastoreAdapter.ts', () => {
         JSON.stringify(expected),
       ])
     })
+
+    it('should call expire when the model has a ttl Integer property', async () => {
+      const input = {
+        redisClient: createRedisClientMock(),
+        instance: TtlTestModel.create({
+          id: 'id-1',
+          name: 'alpha',
+          ttl: 30,
+        }),
+      }
+      const adapter = createDatastoreAdapter({ redisClient: input.redisClient })
+
+      const actual = await adapter.save(input.instance)
+      const expected = {
+        id: 'id-1',
+        name: 'alpha',
+        ttl: 30,
+      }
+
+      const keyPrefix = getKeyPrefixForModel(TtlTestModel)
+      const expectedKey = getKey(keyPrefix, 'id-1')
+      assert.deepEqual(actual, expected)
+      assert.equal(input.redisClient.expire.callCount, 1)
+      assert.deepEqual(input.redisClient.expire.firstCall.args, [
+        expectedKey,
+        30,
+      ])
+    })
+
+    it('should call expire when the model has a ttl Datetime property', async () => {
+      const now = new Date('2024-01-01T00:00:00.000Z')
+      const clock = sinon.useFakeTimers({ now: now.getTime() })
+      const input = {
+        redisClient: createRedisClientMock(),
+        instance: DatetimeTtlTestModel.create({
+          id: 'id-1',
+          name: 'alpha',
+          ttl: '2024-01-01T00:01:00.000Z',
+        }),
+      }
+      const adapter = createDatastoreAdapter({ redisClient: input.redisClient })
+
+      const actual = await adapter.save(input.instance)
+      const expected = {
+        id: 'id-1',
+        name: 'alpha',
+        ttl: '2024-01-01T00:01:00.000Z',
+      }
+
+      const keyPrefix = getKeyPrefixForModel(DatetimeTtlTestModel)
+      const expectedKey = getKey(keyPrefix, 'id-1')
+      assert.deepEqual(actual, expected)
+      assert.equal(input.redisClient.expire.callCount, 1)
+      assert.deepEqual(input.redisClient.expire.firstCall.args, [
+        expectedKey,
+        60,
+      ])
+      clock.restore()
+    })
+
+    it('should not call expire when noDefaultTTL is true', async () => {
+      const input = {
+        redisClient: createRedisClientMock(),
+        instance: TtlTestModel.create({
+          id: 'id-1',
+          name: 'alpha',
+          ttl: 30,
+        }),
+      }
+      const adapter = createDatastoreAdapter({
+        redisClient: input.redisClient,
+        options: {
+          noDefaultTTL: true,
+        },
+      })
+
+      const actual = await adapter.save(input.instance)
+      const expected = {
+        id: 'id-1',
+        name: 'alpha',
+        ttl: 30,
+      }
+
+      assert.deepEqual(actual, expected)
+      assert.equal(input.redisClient.expire.callCount, 0)
+    })
   })
 
   describe('#bulkInsert()', () => {
@@ -124,6 +242,32 @@ describe('/src/datastoreAdapter.ts', () => {
           name: 'beta',
         }),
       })
+    })
+
+    it('should call expire for each record with a ttl Integer property', async () => {
+      const input = {
+        redisClient: createRedisClientMock(),
+        instances: [
+          TtlTestModel.create({ id: 'id-1', name: 'alpha', ttl: 10 }),
+          TtlTestModel.create({ id: 'id-2', name: 'beta', ttl: 20 }),
+        ],
+      }
+      const adapter = createDatastoreAdapter({ redisClient: input.redisClient })
+
+      const actual = await adapter.bulkInsert(TtlTestOrmModel, input.instances)
+      const expected = undefined
+
+      const keyPrefix = getKeyPrefixForModel(TtlTestModel)
+      assert.equal(actual, expected)
+      assert.equal(input.redisClient.expire.callCount, 2)
+      assert.deepEqual(input.redisClient.expire.firstCall.args, [
+        getKey(keyPrefix, 'id-1'),
+        10,
+      ])
+      assert.deepEqual(input.redisClient.expire.secondCall.args, [
+        getKey(keyPrefix, 'id-2'),
+        20,
+      ])
     })
   })
 

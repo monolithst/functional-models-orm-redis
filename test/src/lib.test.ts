@@ -6,11 +6,13 @@ import {
   EqualitySymbol,
   IntegerProperty,
   Model,
+  NumberProperty,
   PropertyType,
   TextProperty,
   queryBuilder,
   SortOrder,
 } from 'functional-models'
+import sinon from 'sinon'
 import {
   fromRedisSearchResponse,
   getKey,
@@ -25,6 +27,7 @@ import {
   toRedisSearchQuery,
   toRedisSearchSchemaArgs,
   toRedisSearchSortArgs,
+  resolveTtlSeconds,
 } from '../../src/lib.js'
 
 type TestModelData = Readonly<{
@@ -47,7 +50,150 @@ const TestModel = Model<TestModelData>({
   },
 })
 
+const TtlTestModel = Model<Readonly<{ id: string; ttl: number }>>({
+  pluralName: 'TtlModel',
+  namespace: '@functional-models-orm-redis',
+  properties: {
+    id: TextProperty(),
+    ttl: IntegerProperty(),
+  },
+})
+
+const CustomTtlTestModel = Model<
+  Readonly<{ id: string; expiresInSeconds: number }>
+>({
+  pluralName: 'CustomTtlModel',
+  namespace: '@functional-models-orm-redis',
+  properties: {
+    id: TextProperty(),
+    expiresInSeconds: IntegerProperty(),
+  },
+})
+
+const InvalidTtlTypeModel = Model<Readonly<{ id: string; ttl: number }>>({
+  pluralName: 'InvalidTtlTypeModel',
+  namespace: '@functional-models-orm-redis',
+  properties: {
+    id: TextProperty(),
+    ttl: NumberProperty(),
+  },
+})
+
+const DatetimeTtlTestModel = Model<Readonly<{ id: string; ttl: string }>>({
+  pluralName: 'DatetimeTtlModel',
+  namespace: '@functional-models-orm-redis',
+  properties: {
+    id: TextProperty(),
+    ttl: DatetimeProperty(),
+  },
+})
+
 describe('/src/lib.ts', () => {
+  describe('#resolveTtlSeconds()', () => {
+    it('should return ttl seconds from the default ttl Integer property', () => {
+      const input = {
+        model: TtlTestModel,
+        data: {
+          id: 'id-1',
+          ttl: 60,
+        },
+      }
+      const actual = resolveTtlSeconds(input)
+      const expected = 60
+      assert.equal(actual, expected)
+    })
+
+    it('should return undefined when noDefaultTTL is true and ttlSelector is not provided', () => {
+      const input = {
+        model: TtlTestModel,
+        data: {
+          id: 'id-1',
+          ttl: 60,
+        },
+        options: {
+          noDefaultTTL: true,
+        },
+      }
+      const actual = resolveTtlSeconds(input)
+      const expected = undefined
+      assert.equal(actual, expected)
+    })
+
+    it('should use ttlSelector when provided', () => {
+      const input = {
+        model: CustomTtlTestModel,
+        data: {
+          id: 'id-1',
+          expiresInSeconds: 120,
+        },
+        options: {
+          ttlSelector: () => 'expiresInSeconds',
+        },
+      }
+      const actual = resolveTtlSeconds(input)
+      const expected = 120
+      assert.equal(actual, expected)
+    })
+
+    it('should return undefined when the ttl property is not an Integer or Datetime type', () => {
+      const input = {
+        model: InvalidTtlTypeModel,
+        data: {
+          id: 'id-1',
+          ttl: 60,
+        },
+      }
+      const actual = resolveTtlSeconds(input)
+      const expected = undefined
+      assert.equal(actual, expected)
+    })
+
+    it('should return ttl seconds from a Datetime property', () => {
+      const now = new Date('2024-01-01T00:00:00.000Z')
+      const clock = sinon.useFakeTimers({ now: now.getTime() })
+      const input = {
+        model: DatetimeTtlTestModel,
+        data: {
+          id: 'id-1',
+          ttl: '2024-01-01T00:01:00.000Z',
+        },
+      }
+      const actual = resolveTtlSeconds(input)
+      const expected = 60
+      assert.equal(actual, expected)
+      clock.restore()
+    })
+
+    it('should return undefined when a Datetime ttl is in the past', () => {
+      const now = new Date('2024-01-01T00:01:00.000Z')
+      const clock = sinon.useFakeTimers({ now: now.getTime() })
+      const input = {
+        model: DatetimeTtlTestModel,
+        data: {
+          id: 'id-1',
+          ttl: '2024-01-01T00:00:00.000Z',
+        },
+      }
+      const actual = resolveTtlSeconds(input)
+      const expected = undefined
+      assert.equal(actual, expected)
+      clock.restore()
+    })
+
+    it('should return undefined when ttl value is not a positive integer', () => {
+      const input = {
+        model: TtlTestModel,
+        data: {
+          id: 'id-1',
+          ttl: 0,
+        },
+      }
+      const actual = resolveTtlSeconds(input)
+      const expected = undefined
+      assert.equal(actual, expected)
+    })
+  })
+
   describe('#getKeyPrefixForModel()', () => {
     it('should return a normalized kebab-case prefix', () => {
       const input = {

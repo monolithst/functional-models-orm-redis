@@ -8,7 +8,8 @@ import {
   PrimaryKeyType,
 } from 'functional-models'
 import groupBy from 'lodash/groupBy.js'
-import { RedisClientLike } from './types.js'
+import { asyncMap } from 'modern-async'
+import { RedisDatastoreAdapterProps } from './types.js'
 import {
   getKeyPrefixForModel as defaultGetKeyPrefixForModel,
   fromRedisSearchResponse,
@@ -16,6 +17,7 @@ import {
   getSearchDocumentKey,
   getSearchDocumentPrefix,
   getSearchIndexName,
+  resolveTtlSeconds,
   searchRecordsWithMemoryAdapter,
   toRedisSearchHashDocument,
   toRedisSearchLimitArgs,
@@ -27,20 +29,6 @@ import {
 
 type WithRequired<T, K extends keyof T> = T & { [P in K]-?: T[P] }
 
-export type RedisOptions = Readonly<{
-  search?: Readonly<{
-    redisStack?: boolean
-  }>
-}>
-
-export type RedisDatastoreAdapterProps = Readonly<{
-  redisClient: RedisClientLike
-  getKeyPrefixForModel?: <T extends DataDescription>(
-    model: ModelType<T>
-  ) => string
-  options?: RedisOptions
-}>
-
 export const create = ({
   redisClient,
   getKeyPrefixForModel = defaultGetKeyPrefixForModel,
@@ -51,6 +39,33 @@ export const create = ({
 > => {
   const stackIndexesReady = new Set<string>()
   const stackEnabled = options?.search?.redisStack === true
+
+  const _applyTtlIfNeeded = async <T extends DataDescription>(
+    args: Readonly<{
+      model: ModelType<T>
+      data: Record<string, unknown>
+      key: string
+      keyPrefix: string
+      primaryKey: PrimaryKeyType
+    }>
+  ) => {
+    const ttl = resolveTtlSeconds({
+      model: args.model,
+      data: args.data,
+      options,
+    })
+    if (ttl === undefined) {
+      return undefined
+    }
+    await redisClient.expire(args.key, ttl)
+    if (stackEnabled) {
+      await redisClient.expire(
+        getSearchDocumentKey(args.keyPrefix, args.primaryKey),
+        ttl
+      )
+    }
+    return undefined
+  }
 
   const ensureRedisStackIndex = async <T extends DataDescription>(
     model: ModelType<T>,
@@ -205,6 +220,13 @@ export const create = ({
       const primaryKey = await instance.getPrimaryKey()
       const key = getKey(keyPrefix, primaryKey)
       await redisClient.set(key, JSON.stringify(obj))
+      await _applyTtlIfNeeded({
+        model,
+        data: obj as Record<string, unknown>,
+        key,
+        keyPrefix,
+        primaryKey,
+      })
 
       if (stackEnabled) {
         await ensureRedisStackIndex(model, keyPrefix)
@@ -234,15 +256,25 @@ export const create = ({
         throw new Error(`Cannot have more than one model type.`)
       }
       const keyPrefix = getKeyPrefixForModel<T>(model)
-      const entries = await Promise.all(
-        instances.map(async instance => {
-          const obj = await instance.toObj<T>()
-          const primaryKey = await instance.getPrimaryKey()
-          const key = getKey(keyPrefix, primaryKey)
-          return [key, JSON.stringify(obj)] as const
-        })
-      )
+      const entries = await asyncMap(instances, async instance => {
+        const obj = await instance.toObj<T>()
+        const primaryKey = await instance.getPrimaryKey()
+        const key = getKey(keyPrefix, primaryKey)
+        return [key, JSON.stringify(obj)] as const
+      })
       await mset(entries)
+      await asyncMap(instances, async instance => {
+        const obj = await instance.toObj<T>()
+        const primaryKey = await instance.getPrimaryKey()
+        const key = getKey(keyPrefix, primaryKey)
+        return _applyTtlIfNeeded({
+          model,
+          data: obj as Record<string, unknown>,
+          key,
+          keyPrefix,
+          primaryKey,
+        })
+      })
 
       if (stackEnabled) {
         await ensureRedisStackIndex(model, keyPrefix)
