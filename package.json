@@ -1,6 +1,6 @@
 {
   "name": "functional-models-orm-redis",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A functional models orm database using Redis.",
   "main": "index.js",
   "type": "module",
